@@ -2426,7 +2426,7 @@ do
             Library:AddToolTip(Info.Tooltip, DropdownOuter)
         end
 
-        local MAX_DROPDOWN_ITEMS = 8;
+        local MAX_DROPDOWN_ITEMS = 14;
 
         local ListOuter = Library:Create('Frame', {
             BackgroundColor3 = Color3.new(0, 0, 0);
@@ -2484,7 +2484,9 @@ do
             CanvasSize = UDim2.new(0, 0, 0, 0);
             Size = UDim2.new(1, 0, 1, 0);
             ZIndex = 21;
-            ScrollingEnabled = true;
+            -- ScrollingEnabled is off: Active=true buttons eat touch events,
+            -- so we manually drive CanvasPosition for both PC and mobile.
+            ScrollingEnabled = false;
             ScrollingDirection = Enum.ScrollingDirection.Y;
             ElasticBehavior = Enum.ElasticBehavior.Never;
             Parent = ListInner;
@@ -2524,43 +2526,49 @@ do
                 math.clamp(Scrolling.CanvasPosition.Y + scrollAmt, 0, maxScroll))
         end))
 
-        -- Track drag/touch so scrolling doesn't accidentally pick or close the list
+        -- Track drag/touch: drives scroll manually and guards against
+        -- accidental item selection and auto-close on both PC and mobile.
         local _dropScrolling = false
         local _dropDragStartY = 0
+        local _dropInsideList = false
+
         Library:GiveSignal(InputService.InputBegan:Connect(function(Input)
             if not ListOuter.Visible then return end
             if not Library:IsPrimaryInput(Input) then return end
             local absPos = ListOuter.AbsolutePosition
             local absSize = ListOuter.AbsoluteSize
             local pointer = Library:GetPointerPosition(Input)
-            if pointer.X >= absPos.X and pointer.X <= absPos.X + absSize.X
-                and pointer.Y >= absPos.Y and pointer.Y <= absPos.Y + absSize.Y then
+            _dropInsideList = pointer.X >= absPos.X and pointer.X <= absPos.X + absSize.X
+                and pointer.Y >= absPos.Y and pointer.Y <= absPos.Y + absSize.Y
+            if _dropInsideList then
                 _dropScrolling = false
                 _dropDragStartY = pointer.Y
             end
         end))
+
         Library:GiveSignal(InputService.InputChanged:Connect(function(Input)
             if not ListOuter.Visible then return end
             local isMouseDrag = Input.UserInputType == Enum.UserInputType.MouseMovement
                 and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
             local isTouchDrag = Input.UserInputType == Enum.UserInputType.Touch
             if not isMouseDrag and not isTouchDrag then return end
+            if not _dropInsideList then return end
             local currentY = Library:GetPointerPosition(Input).Y
             local dy = math.abs(currentY - _dropDragStartY)
             if dy > 5 then
                 _dropScrolling = true
-                -- For PC mouse only — touch natively scrolls via ScrollingEnabled
-                if isMouseDrag then
-                    local scrollAmt = -(currentY - _dropDragStartY) * 0.5
-                    _dropDragStartY = currentY
-                    local maxScroll = math.max(0, Scrolling.CanvasSize.Y.Offset - Scrolling.AbsoluteSize.Y)
-                    Scrolling.CanvasPosition = Vector2.new(0,
-                        math.clamp(Scrolling.CanvasPosition.Y + scrollAmt, 0, maxScroll))
-                end
+                -- Manually move canvas for BOTH mouse and touch
+                local scrollAmt = -(currentY - _dropDragStartY)
+                _dropDragStartY = currentY
+                local maxScroll = math.max(0, Scrolling.CanvasSize.Y.Offset - Scrolling.AbsoluteSize.Y)
+                Scrolling.CanvasPosition = Vector2.new(0,
+                    math.clamp(Scrolling.CanvasPosition.Y + scrollAmt, 0, maxScroll))
             end
         end))
+
         Library:GiveSignal(InputService.InputEnded:Connect(function(Input)
             if Library:IsPrimaryInput(Input) then
+                _dropInsideList = false
                 task.defer(function() _dropScrolling = false end)
             end
         end))
@@ -2705,7 +2713,7 @@ do
 
                         Library:AttemptSave();
                     end;
-                end, { MoveThreshold = InputService.TouchEnabled and 40 or 6, AllowWhenOpenedFrame = true })
+                end, { MoveThreshold = InputService.TouchEnabled and 9999 or 6, AllowWhenOpenedFrame = true })
 
                 Table:UpdateButton();
                 Dropdown:Display();
@@ -2782,8 +2790,8 @@ do
 
         InputService.InputBegan:Connect(function(Input)
             if Library:IsPrimaryInput(Input) then
-                -- Don't close when user is actively scrolling through the list
-                if _dropScrolling then return end
+                -- Never close while a scroll gesture is active inside the list
+                if _dropScrolling or _dropInsideList then return end
 
                 local AbsPos, AbsSize = ListOuter.AbsolutePosition, ListOuter.AbsoluteSize;
                 local Pointer = Library:GetPointerPosition(Input)
