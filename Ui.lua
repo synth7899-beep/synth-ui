@@ -33,7 +33,7 @@ local Library = {
     FontColor = Color3.fromRGB(235, 235, 235);
     MainColor = Color3.fromRGB(24, 24, 24);
     BackgroundColor = Color3.fromRGB(16, 16, 16);
-    AccentColor = Color3.fromRGB(200, 60, 255);
+    AccentColor = Color3.fromRGB(220, 40, 40);
     OutlineColor = Color3.fromRGB(65, 65, 65);
     RiskColor = Color3.fromRGB(255, 50, 50),
 
@@ -266,70 +266,54 @@ function Library:MakeDraggable(Handle, Cutoff, Target)
     Handle.Active = true
 
     local Dragging = false
-    local DragInput
     local DragStart
     local StartPos
-    local DragConn
-
-    local function Update()
-        if not Dragging or not DragStart or not StartPos then
-            return
-        end
-
-        local Pointer = Library:GetPointerPosition(DragInput)
-        local Delta = Pointer - DragStart
-
-        local desired = UDim2.new(
-            StartPos.X.Scale,
-            StartPos.X.Offset + Delta.X,
-            StartPos.Y.Scale,
-            StartPos.Y.Offset + Delta.Y
-        )
-
-        -- Smooth drag (helps touch jitter) while staying responsive
-        local alpha = InputService.TouchEnabled and 0.85 or 1
-        if alpha >= 1 then
-            Instance.Position = desired
-        else
-            Instance.Position = Instance.Position:Lerp(desired, alpha)
-        end
-    end
 
     Handle.InputBegan:Connect(function(Input)
-        if not Library:IsPrimaryInput(Input) then
+        if not Library:IsPrimaryInput(Input) then return end
+
+        local Pointer = Library:GetPointerPosition(Input)
+        local ObjPos = Pointer - Handle.AbsolutePosition
+        if ObjPos.Y > (Cutoff or 40) then return end
+
+        Dragging = true
+        Library.IsDragging = true
+        DragStart = Pointer
+        StartPos = Instance.Position
+
+        Input.Changed:Connect(function()
+            if Input.UserInputState == Enum.UserInputState.End
+                or Input.UserInputState == Enum.UserInputState.Cancel then
+                Dragging = false
+                Library.IsDragging = false
+            end
+        end)
+    end)
+
+    Library:GiveSignal(InputService.InputChanged:Connect(function(Input)
+        if not Dragging then return end
+        if Input.UserInputType ~= Enum.UserInputType.MouseMovement
+            and Input.UserInputType ~= Enum.UserInputType.Touch then
             return
         end
 
         local Pointer = Library:GetPointerPosition(Input)
-        local ObjPos = Pointer - Handle.AbsolutePosition
+        local Delta = Pointer - DragStart
 
-        if ObjPos.Y > (Cutoff or 40) then
-            return
+        -- Clamp to viewport so window can't be dragged off screen
+        local vp = Library:GetSafeViewportSize()
+        local instSize = Instance.AbsoluteSize
+        local newX = math.clamp(StartPos.X.Offset + Delta.X, 0, math.max(0, vp.X - instSize.X))
+        local newY = math.clamp(StartPos.Y.Offset + Delta.Y, 0, math.max(0, vp.Y - instSize.Y))
+
+        if InputService.TouchEnabled then
+            -- Gentle lerp on touch to reduce jitter
+            local target = UDim2.new(StartPos.X.Scale, newX, StartPos.Y.Scale, newY)
+            Instance.Position = Instance.Position:Lerp(target, 0.85)
+        else
+            Instance.Position = UDim2.new(StartPos.X.Scale, newX, StartPos.Y.Scale, newY)
         end
-
-        Dragging = true
-        Library.IsDragging = true
-        DragInput = Input
-        DragStart = Pointer
-        StartPos = Instance.Position
-
-        if DragConn then
-            DragConn:Disconnect()
-            DragConn = nil
-        end
-        DragConn = RenderStepped:Connect(Update)
-
-        Input.Changed:Connect(function()
-            if Input.UserInputState == Enum.UserInputState.End or Input.UserInputState == Enum.UserInputState.Cancel then
-                Dragging = false
-                Library.IsDragging = false
-                if DragConn then
-                    DragConn:Disconnect()
-                    DragConn = nil
-                end
-            end
-        end)
-    end)
+    end))
 end
 
 function Library:AddToolTip(InfoStr, HoverInstance)
@@ -2500,6 +2484,9 @@ do
             CanvasSize = UDim2.new(0, 0, 0, 0);
             Size = UDim2.new(1, 0, 1, 0);
             ZIndex = 21;
+            ScrollingEnabled = true;
+            ScrollingDirection = Enum.ScrollingDirection.Y;
+            ElasticBehavior = Enum.ElasticBehavior.Never;
             Parent = ListInner;
 
             TopImage = 'rbxasset://textures/ui/Scroll/scroll-middle.png',
@@ -2519,6 +2506,64 @@ do
             SortOrder = Enum.SortOrder.LayoutOrder;
             Parent = Scrolling;
         });
+
+        -- Mousewheel scrolling for PC
+        Library:GiveSignal(InputService.InputChanged:Connect(function(Input)
+            if not ListOuter.Visible then return end
+            if Input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
+            local absPos = ListOuter.AbsolutePosition
+            local absSize = ListOuter.AbsoluteSize
+            local pointer = Library:GetPointerPosition()
+            if pointer.X < absPos.X or pointer.X > absPos.X + absSize.X
+                or pointer.Y < absPos.Y or pointer.Y > absPos.Y + absSize.Y then
+                return
+            end
+            local scrollAmt = -Input.Position.Z * 44
+            local maxScroll = math.max(0, Scrolling.CanvasSize.Y.Offset - Scrolling.AbsoluteSize.Y)
+            Scrolling.CanvasPosition = Vector2.new(0,
+                math.clamp(Scrolling.CanvasPosition.Y + scrollAmt, 0, maxScroll))
+        end))
+
+        -- Track drag/touch so scrolling doesn't accidentally pick or close the list
+        local _dropScrolling = false
+        local _dropDragStartY = 0
+        Library:GiveSignal(InputService.InputBegan:Connect(function(Input)
+            if not ListOuter.Visible then return end
+            if not Library:IsPrimaryInput(Input) then return end
+            local absPos = ListOuter.AbsolutePosition
+            local absSize = ListOuter.AbsoluteSize
+            local pointer = Library:GetPointerPosition(Input)
+            if pointer.X >= absPos.X and pointer.X <= absPos.X + absSize.X
+                and pointer.Y >= absPos.Y and pointer.Y <= absPos.Y + absSize.Y then
+                _dropScrolling = false
+                _dropDragStartY = pointer.Y
+            end
+        end))
+        Library:GiveSignal(InputService.InputChanged:Connect(function(Input)
+            if not ListOuter.Visible then return end
+            local isMouseDrag = Input.UserInputType == Enum.UserInputType.MouseMovement
+                and InputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+            local isTouchDrag = Input.UserInputType == Enum.UserInputType.Touch
+            if not isMouseDrag and not isTouchDrag then return end
+            local currentY = Library:GetPointerPosition(Input).Y
+            local dy = math.abs(currentY - _dropDragStartY)
+            if dy > 5 then
+                _dropScrolling = true
+                -- For PC mouse only — touch natively scrolls via ScrollingEnabled
+                if isMouseDrag then
+                    local scrollAmt = -(currentY - _dropDragStartY) * 0.5
+                    _dropDragStartY = currentY
+                    local maxScroll = math.max(0, Scrolling.CanvasSize.Y.Offset - Scrolling.AbsoluteSize.Y)
+                    Scrolling.CanvasPosition = Vector2.new(0,
+                        math.clamp(Scrolling.CanvasPosition.Y + scrollAmt, 0, maxScroll))
+                end
+            end
+        end))
+        Library:GiveSignal(InputService.InputEnded:Connect(function(Input)
+            if Library:IsPrimaryInput(Input) then
+                task.defer(function() _dropScrolling = false end)
+            end
+        end))
 
         function Dropdown:Display()
             local Values = Dropdown.Values;
@@ -2621,6 +2666,7 @@ do
                 end;
 
                 Library:BindTap(Button, function()
+                    if _dropScrolling then return end
                     local Try = not Selected;
 
                     if Dropdown:GetActiveValues() == 1 and (not Try) and (not Info.AllowNull) then
@@ -2659,7 +2705,7 @@ do
 
                         Library:AttemptSave();
                     end;
-                end, { MoveThreshold = InputService.TouchEnabled and 40 or 40, AllowWhenOpenedFrame = true })
+                end, { MoveThreshold = InputService.TouchEnabled and 40 or 6, AllowWhenOpenedFrame = true })
 
                 Table:UpdateButton();
                 Dropdown:Display();
@@ -2736,9 +2782,11 @@ do
 
         InputService.InputBegan:Connect(function(Input)
             if Library:IsPrimaryInput(Input) then
-                local AbsPos, AbsSize = ListOuter.AbsolutePosition, ListOuter.AbsoluteSize;
+                -- Don't close when user is actively scrolling through the list
+                if _dropScrolling then return end
 
-                local Pointer = Library:GetPointerPosition()
+                local AbsPos, AbsSize = ListOuter.AbsolutePosition, ListOuter.AbsoluteSize;
+                local Pointer = Library:GetPointerPosition(Input)
 
                 if Pointer.X < AbsPos.X or Pointer.X > AbsPos.X + AbsSize.X
                     or Pointer.Y < (AbsPos.Y - 20 - 1) or Pointer.Y > AbsPos.Y + AbsSize.Y then
